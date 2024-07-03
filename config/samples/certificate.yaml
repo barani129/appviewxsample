@@ -1,0 +1,12 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+ name: api
+ namespace: default
+spec:
+ commonName: "*.api.test45.ocp.internal.spark.co.nz"
+ issuerRef:
+  kind: ClusterIssuer
+  group: certm.spark.co.nz
+  name: appviewx
+ secretName: appviewxsec

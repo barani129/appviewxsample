@@ -242,6 +242,7 @@ func (r *CertificateRequestReconciler) Reconcile(ctx context.Context, req ctrl.R
 	}
 
 	byteCert, err := base64.StdEncoding.DecodeString(string(certificate))
+
 	if err != nil {
 		report(cmapi.CertificateRequestReasonFailed, err.Error(), nil)
 		return ctrl.Result{}, fmt.Errorf("failed to decode the certificate from appviewx: %v", err)

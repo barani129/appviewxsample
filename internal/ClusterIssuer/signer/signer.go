@@ -28,7 +28,7 @@ func SearchCertificate(spec *v1alpha1.ClusterIssuerSpec, csr string, commonName 
 	}
 	//Search remote API for the certificate
 	certificate, err := certmutil.APICertificateHandler(spec, token, csr, commonName)
-	if err != nil {
+	if err != nil || certificate == nil {
 		return nil, err
 	}
 	return certificate, nil

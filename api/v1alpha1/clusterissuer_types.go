@@ -37,6 +37,10 @@ type ClusterIssuerSpec struct {
 
 	// Reference to the secret that's holding the login credentials for the REST API
 	AuthSecretName string `json:"authSecretName"`
+
+	// proxy to reach external URL
+	// +optional
+	Proxy string `json:"proxy,omitempty"`
 }
 
 // ClusterIssuerStatus defines the observed state of ClusterIssuer

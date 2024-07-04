@@ -4,9 +4,11 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -262,8 +264,20 @@ func SetReadyCondition(status *v1alpha1.ClusterIssuerStatus, conditionStatus v1a
 }
 
 func GetAPIAliveness(spec *v1alpha1.ClusterIssuerSpec) error {
-	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	var tr *http.Transport
+	if spec.Proxy != "" {
+		purl, err := url.Parse(spec.Proxy)
+		if err != nil {
+			return err
+		}
+		tr = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			Proxy:           http.ProxyURL(purl),
+		}
+	} else {
+		tr = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
 	}
 	client := &http.Client{
 		Timeout:   5 * time.Second,
@@ -288,10 +302,22 @@ func GetAPIAliveness(spec *v1alpha1.ClusterIssuerSpec) error {
 }
 
 func GetToken(spec *v1alpha1.ClusterIssuerSpec, username string, password string) (string, error) {
-	url := spec.URL
-	nurl := url + "/acctmgmt-get-service-token?gwsource=external"
-	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	aurl := spec.URL
+	nurl := aurl + "/acctmgmt-get-service-token?gwsource=external"
+	var tr *http.Transport
+	if spec.Proxy != "" {
+		purl, err := url.Parse(spec.Proxy)
+		if err != nil {
+			return "", err
+		}
+		tr = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			Proxy:           http.ProxyURL(purl),
+		}
+	} else {
+		tr = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
 	}
 	client := &http.Client{
 		Timeout:   5 * time.Second,
@@ -330,11 +356,23 @@ func basicAuth(username, password string) string {
 	return base64.StdEncoding.EncodeToString([]byte(auth))
 }
 
-func SearchCertificate(spec *v1alpha1.ClusterIssuerSpec, token string, cn string) ([]byte, int, error) {
-	url := spec.URL
-	nurl := url + "/certificate/search?gwsource=external"
-	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+func SearchCertificate(spec *v1alpha1.ClusterIssuerSpec, token string, cn string) ([]byte, bool, int, error) {
+	aurl := spec.URL
+	nurl := aurl + "/certificate/search?gwsource=external"
+	var tr *http.Transport
+	if spec.Proxy != "" {
+		purl, err := url.Parse(spec.Proxy)
+		if err != nil {
+			return nil, false, 0, err
+		}
+		tr = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			Proxy:           http.ProxyURL(purl),
+		}
+	} else {
+		tr = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
 	}
 	client := &http.Client{
 		Timeout:   30 * time.Second,
@@ -343,47 +381,55 @@ func SearchCertificate(spec *v1alpha1.ClusterIssuerSpec, token string, cn string
 	var data = strings.NewReader(fmt.Sprintf(`{"input":{"category":"Server","keywordSearch" : {"subject:cn":"%s"}},"filter":{"max":"100","start":"1","sortColumn":"commonName","sortOrder":"desc"}}`, cn))
 	req, err := http.NewRequest("POST", nurl, data)
 	if err != nil {
-		return nil, 0, err
+		return nil, false, 0, err
 	}
 	req.Header.Add("token", token)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, 0, err
+		return nil, false, 0, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == 404 {
-		return nil, resp.StatusCode, fmt.Errorf("certificate not found")
+		return nil, false, resp.StatusCode, fmt.Errorf("certificate not found")
 	}
 	if resp.StatusCode != 200 || resp == nil {
-		return nil, 0, err
+		return nil, false, 0, err
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, 0, err
+		return nil, false, 0, err
 	}
 	var x AppResponse
 	err = json.Unmarshal([]byte(body), &x)
 	if err != nil {
-		return nil, 0, err
+		return nil, false, 0, err
 	}
-	for i := 0; i < (len(x.Response.Response.Objects)); i++ {
-		for range x.Response.Response.Objects {
-			if x.Response.Response.Objects[i].ExpiryStatus == "Valid" {
-				return []byte(fmt.Sprintf("%v", x.Response.Response.Objects[i])), 200, nil
-			}
-		}
+	if len(x.Response.Response.Objects) > 1 {
+		return nil, true, 998, nil
 	}
-	return nil, 0, err
+	if x.Response.Response.Objects[0].ExpiryStatus == "Valid" {
+		return []byte(fmt.Sprintf("%v", x.Response.Response.Objects[0])), true, 200, nil
+	} else {
+		// code 999 indicates that certificate has been expired
+		return nil, true, 999, nil
+	}
 }
 
 func APICertificateHandler(spec *v1alpha1.ClusterIssuerSpec, token string, csr string, cn string) ([]byte, error) {
-	certificate, code, err := SearchCertificate(spec, token, cn)
-	if code == 200 && certificate != nil {
-		return certificate, nil
+	certificate, exists, code, err := SearchCertificate(spec, token, cn)
+	if exists && code == 200 && err != nil {
+		//reissue the certificate
+		var x Certificate
+		json.Unmarshal(certificate, &x)
+		cert, code, err := ReissueCertificate(spec, token, csr, cn, x.ResourceID, x.SerialNumber)
+		if err != nil || code != 200 {
+			return nil, err
+		}
+		return cert, nil
 	}
-	if code == 404 {
+	if !exists && code == 404 && errors.Is(err, fmt.Errorf("certificate not found")) {
 		//Certificate not found
 		certificate, code, err := CreateCertificate(spec, token, csr, cn)
 		if code != 200 || err != nil {
@@ -391,7 +437,10 @@ func APICertificateHandler(spec *v1alpha1.ClusterIssuerSpec, token string, csr s
 		}
 		return certificate, nil
 	}
-	if certificate != nil && code == 999 {
+	if exists && code == 998 && err != nil {
+		return nil, fmt.Errorf("multiple certificates found for this cn %s", cn)
+	}
+	if exists && code == 999 && err != nil {
 		//logic for renewing the expired certificate
 		var x Certificate
 		json.Unmarshal(certificate, &x)
@@ -408,10 +457,22 @@ func APICertificateHandler(spec *v1alpha1.ClusterIssuerSpec, token string, csr s
 }
 
 func CreateCertificate(spec *v1alpha1.ClusterIssuerSpec, token string, csr string, cn string) (certificate []byte, code int, err error) {
-	url := spec.URL
-	nurl := url + "/certificate/create?gwsource=external&isSync=true&ttl=300"
-	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	aurl := spec.URL
+	nurl := aurl + "/certificate/create?gwsource=external&isSync=true&ttl=300"
+	var tr *http.Transport
+	if spec.Proxy != "" {
+		purl, err := url.Parse(spec.Proxy)
+		if err != nil {
+			return nil, 0, err
+		}
+		tr = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			Proxy:           http.ProxyURL(purl),
+		}
+	} else {
+		tr = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
 	}
 	client := &http.Client{
 		Timeout:   30 * time.Second,
@@ -468,16 +529,90 @@ func CreateCertificate(spec *v1alpha1.ClusterIssuerSpec, token string, csr strin
 }
 
 func RenewCertificate(spec *v1alpha1.ClusterIssuerSpec, token string, cn string, resourceid string, serialnumber string) (certificate []byte, code int, err error) {
-	url := spec.URL
-	nurl := url + "/certificate/renew?gwsource=external&isSync=true&ttl=300"
-	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	aurl := spec.URL
+	nurl := aurl + "/certificate/renew?gwsource=external&isSync=true&ttl=300"
+	var tr *http.Transport
+	if spec.Proxy != "" {
+		purl, err := url.Parse(spec.Proxy)
+		if err != nil {
+			return nil, 0, err
+		}
+		tr = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			Proxy:           http.ProxyURL(purl),
+		}
+	} else {
+		tr = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
 	}
 	client := &http.Client{
 		Timeout:   50 * time.Second,
 		Transport: tr,
 	}
 	var data = strings.NewReader(fmt.Sprintf(`{"resourceId": "%s","commonName": "%s","serialNumber": "%s","action": "renew","certificateFormat":{"format" : "PEM","password" : ""}}`, resourceid, cn, serialnumber))
+	req, err := http.NewRequest("PUT", nurl, data)
+	if err != nil {
+		return nil, 0, err
+	}
+	req.Header.Add("token", token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 || resp == nil {
+		return nil, 0, err
+	}
+	bodyText, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, 0, err
+	}
+	var x CreationResponse
+	err = json.Unmarshal([]byte(bodyText), &x)
+	if err != nil {
+		return nil, 0, err
+	}
+	return []byte(fmt.Sprintf("%v", x.Response.CertificateContent)), 200, nil
+}
+
+func ReissueCertificate(spec *v1alpha1.ClusterIssuerSpec, token string, csr string, cn string, resourceid string, serialnumber string) (certificate []byte, code int, err error) {
+	aurl := spec.URL
+	nurl := aurl + "/certificate/reissue?gwsource=external&isSync=true&ttl=300"
+	var tr *http.Transport
+	if spec.Proxy != "" {
+		purl, err := url.Parse(spec.Proxy)
+		if err != nil {
+			return nil, 0, err
+		}
+		tr = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			Proxy:           http.ProxyURL(purl),
+		}
+	} else {
+		tr = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
+	}
+	client := &http.Client{
+		Timeout:   50 * time.Second,
+		Transport: tr,
+	}
+	data := strings.NewReader(fmt.Sprintf(`{
+		"resourceId": "%s",
+		"commonName": "%s",
+		"serialNumber": "%s",
+		"reason": "whatever",
+		"uploadCsrDetails": {
+			"category": "Server",
+			"csrContent": "%s"
+		},
+		"certificateFormat":{
+			"format" : "pem",
+			"password" : ""
+		}
+	}`, resourceid, cn, serialnumber, csr))
 	req, err := http.NewRequest("PUT", nurl, data)
 	if err != nil {
 		return nil, 0, err

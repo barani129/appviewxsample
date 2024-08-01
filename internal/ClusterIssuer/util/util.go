@@ -366,7 +366,10 @@ func SearchCertificate(spec *v1alpha1.ClusterIssuerSpec, token string, cn string
 		if x.Response.Response.Objects[i].ExpiryStatus == "Valid" || strings.Contains(x.Response.Response.Objects[i].ExpiryStatus, "Expiry") {
 			// return early with a valid certificate if found
 			return x.Response.Response.Objects[i].ResourceID, true, 200, nil
-		} else if x.Response.Response.Objects[i].ExpiryStatus == "Revoked" {
+		}
+	}
+	for i := 0; i < (len(x.Response.Response.Objects)); i++ {
+		if x.Response.Response.Objects[i].ExpiryStatus == "Revoked" {
 			return "", true, 996, nil
 		}
 	}

@@ -1,7 +1,6 @@
 package signer
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/barani129/appviewx/api/v1alpha1"
@@ -18,7 +17,6 @@ func ParseCommonName(csrbytes []byte) (string, error) {
 }
 
 func SearchCertificate(spec *v1alpha1.ClusterIssuerSpec, csr string, commonName string, username string, password string, interCert string) ([]byte, error) {
-	fmt.Println("intercert", interCert)
 	token, err := certmutil.GetToken(spec, username, password)
 	if err != nil {
 		return nil, err
@@ -28,7 +26,6 @@ func SearchCertificate(spec *v1alpha1.ClusterIssuerSpec, csr string, commonName 
 	if err != nil || certificate == nil {
 		return nil, err
 	}
-	// newCert := base64.StdEncoding.EncodeToString([]byte(strCert))
 	return certificate, nil
 }
 

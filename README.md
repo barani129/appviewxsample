@@ -1,8 +1,8 @@
 # appviewx
-// TODO(user): Add simple overview of use/purpose
+Sample cluster issuer for retrieving certificates from appviewx backend
 
 ## Description
-// TODO(user): An in-depth paragraph about your project and overview of use
+Sample cluster issuer for retrieving certificates from appviewx backend
 
 ## Getting Started
 

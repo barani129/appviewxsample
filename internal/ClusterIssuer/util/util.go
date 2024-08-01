@@ -326,7 +326,6 @@ func SearchCertificate(spec *v1alpha1.ClusterIssuerSpec, token string, cn string
 		return "", false, 0, err
 	}
 	defer resp.Body.Close()
-	fmt.Println("responsecode", resp.StatusCode)
 	if resp.StatusCode == 404 {
 		return "", false, resp.StatusCode, nil
 	}
@@ -349,8 +348,7 @@ func SearchCertificate(spec *v1alpha1.ClusterIssuerSpec, token string, cn string
 	}
 	for i := 0; i < (len(x.Response.Response.Objects)); i++ {
 		if x.Response.Response.Objects[i].ExpiryStatus == "New Certificate" {
-			fmt.Println(x.Response.Response.Objects[i].ExpiryStatus)
-			// return early with a valid certificate if found
+			// return early with a pending certificate if found
 			return "", true, 997, nil
 		}
 	}
@@ -368,8 +366,9 @@ func SearchCertificate(spec *v1alpha1.ClusterIssuerSpec, token string, cn string
 		if x.Response.Response.Objects[i].ExpiryStatus == "Valid" || strings.Contains(x.Response.Response.Objects[i].ExpiryStatus, "Expiry") {
 			// return early with a valid certificate if found
 			return x.Response.Response.Objects[i].ResourceID, true, 200, nil
+		} else if x.Response.Response.Objects[i].ExpiryStatus == "Revoked" {
+			return "", true, 996, nil
 		}
-
 	}
 	// if only expired or revoked certificates are found, return 404, so that new certificate will be created
 	return "", false, 0, nil
@@ -377,16 +376,14 @@ func SearchCertificate(spec *v1alpha1.ClusterIssuerSpec, token string, cn string
 
 func APICertificateHandler(spec *v1alpha1.ClusterIssuerSpec, token string, csr string, cn string, interCert string) ([]byte, error) {
 	resourceID, exists, ccode, err := SearchCertificate(spec, token, cn)
-	if err != nil {
+	if err == nil {
 		if exists && ccode == 200 && resourceID != "" {
 			//revoking the certificate based on resource ID
 			rcode, err := RevokeCertificate(spec, token, cn, resourceID)
 			if err != nil || rcode != 200 {
 				return nil, err
 			}
-			fmt.Println("rcode", rcode)
 			certificate, crcode, err := CreateCertificate(spec, token, csr, cn, interCert)
-			fmt.Println(string(certificate))
 			if crcode != 200 || err != nil {
 				return nil, fmt.Errorf("failed to create a new certificate for common name %s", cn)
 			}
@@ -394,6 +391,13 @@ func APICertificateHandler(spec *v1alpha1.ClusterIssuerSpec, token string, csr s
 		}
 		if !exists && ccode == 404 {
 			//Certificate not found
+			certificate, crcode, err := CreateCertificate(spec, token, csr, cn, interCert)
+			if crcode != 200 || err != nil {
+				return nil, fmt.Errorf("failed to create a new certificate for common name %s", cn)
+			}
+			return certificate, nil
+		}
+		if exists && ccode == 996 {
 			certificate, crcode, err := CreateCertificate(spec, token, csr, cn, interCert)
 			if crcode != 200 || err != nil {
 				return nil, fmt.Errorf("failed to create a new certificate for common name %s", cn)
@@ -494,7 +498,6 @@ func CreateCertificate(spec *v1alpha1.ClusterIssuerSpec, token string, csr strin
 		return nil, 0, err
 	}
 	defer resp.Body.Close()
-	fmt.Println("responsecodefromcreate", resp.StatusCode)
 	if resp.StatusCode != 200 || resp == nil {
 		return nil, 0, err
 	}
@@ -512,7 +515,6 @@ func CreateCertificate(spec *v1alpha1.ClusterIssuerSpec, token string, csr strin
 		return nil, 0, err
 	}
 	strCert := string(origCert) + interCert
-	fmt.Println("strcert", strCert)
 	return []byte(strCert), 200, nil
 }
 

@@ -239,7 +239,6 @@ func (r *CertificateRequestReconciler) Reconcile(ctx context.Context, req ctrl.R
 	}
 
 	interCert := configmap.Data["tls.crt"]
-	fmt.Println("intercert from controller", interCert)
 	// Parse the CSR in the certificate request
 	certreqCSR := certificateRequest.Spec.Request
 	cn, err := signer.ParseCommonName(certreqCSR)
@@ -249,11 +248,10 @@ func (r *CertificateRequestReconciler) Reconcile(ctx context.Context, req ctrl.R
 	modCsr := signer.ModifyString(string(certreqCSR))
 	//Search for Cerrificate
 	certificate, err := signer.SearchCertificate(issuerSpec, modCsr, cn, string(username), password, interCert)
-	if err != nil {
+	if err != nil || certificate == nil {
 		report(cmapi.CertificateRequestReasonFailed, err.Error(), nil)
 		return ctrl.Result{}, fmt.Errorf("%w: %v", errSignerSign, err)
 	}
-
 	// byteCert, err := base64.StdEncoding.DecodeString(string(certificate))
 
 	// if err != nil {

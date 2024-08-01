@@ -18,7 +18,6 @@ package controller
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 
@@ -60,6 +59,7 @@ type CertificateRequestReconciler struct {
 // +kubebuilder:rbac:groups=cert-manager.io,resources=certificaterequests,verbs=get;list;watch
 // +kubebuilder:rbac:groups=cert-manager.io,resources=certificaterequests/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 func (r *CertificateRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, err error) {
 	log := ctrl.LoggerFrom(ctx)
@@ -190,9 +190,11 @@ func (r *CertificateRequestReconciler) Reconcile(ctx context.Context, req ctrl.R
 		Name: certificateRequest.Spec.IssuerRef.Name,
 	}
 	var secretNamespace string
+	var configmapNamespace string
 	switch t := issuer.(type) {
 	case *v1alpha1.ClusterIssuer:
 		secretNamespace = r.ClusterResourceNamespace
+		configmapNamespace = r.ClusterResourceNamespace
 		log = log.WithValues("clusterissuer", issuerName)
 	default:
 		report(cmapi.CertificateRequestReasonFailed, "The issuerRef referred to a registered Kind which is not yet handled. Ignoring", fmt.Errorf("unexpected issuer type: %v", t))
@@ -219,35 +221,46 @@ func (r *CertificateRequestReconciler) Reconcile(ctx context.Context, req ctrl.R
 		Namespace: secretNamespace,
 	}
 
+	configmapName := types.NamespacedName{
+		Name:      issuerSpec.IntermediateConfigmap,
+		Namespace: configmapNamespace,
+	}
+
 	var secret corev1.Secret
 	if err := r.Get(ctx, secretName, &secret); err != nil {
 		return ctrl.Result{}, fmt.Errorf("%w, secret name: %s, reason: %v", errGetAuthSecret, secretName, err)
 	}
-
 	username := secret.Data["username"]
 	password := string(secret.Data["password"])
 
+	var configmap corev1.ConfigMap
+	if err := r.Get(ctx, configmapName, &configmap); err != nil {
+		return ctrl.Result{}, fmt.Errorf("%w, configmap name: %s, reason: %v", errGetAuthConfigmap, configmapName, err)
+	}
+
+	interCert := configmap.Data["tls.crt"]
+	fmt.Println("intercert from controller", interCert)
 	// Parse the CSR in the certificate request
 	certreqCSR := certificateRequest.Spec.Request
 	cn, err := signer.ParseCommonName(certreqCSR)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("%w: %v", errSignerSign, err)
 	}
-	modCert := signer.ModifyString(string(certreqCSR))
+	modCsr := signer.ModifyString(string(certreqCSR))
 	//Search for Cerrificate
-	certificate, err := signer.SearchCertificate(issuerSpec, modCert, cn, string(username), password)
+	certificate, err := signer.SearchCertificate(issuerSpec, modCsr, cn, string(username), password, interCert)
 	if err != nil {
 		report(cmapi.CertificateRequestReasonFailed, err.Error(), nil)
 		return ctrl.Result{}, fmt.Errorf("%w: %v", errSignerSign, err)
 	}
 
-	byteCert, err := base64.StdEncoding.DecodeString(string(certificate))
+	// byteCert, err := base64.StdEncoding.DecodeString(string(certificate))
 
-	if err != nil {
-		report(cmapi.CertificateRequestReasonFailed, err.Error(), nil)
-		return ctrl.Result{}, fmt.Errorf("failed to decode the certificate from appviewx: %v", err)
-	}
-	certificateRequest.Status.Certificate = byteCert
+	// if err != nil {
+	// 	report(cmapi.CertificateRequestReasonFailed, err.Error(), nil)
+	// 	return ctrl.Result{}, fmt.Errorf("failed to decode the certificate from appviewx: %v", err)
+	// }
+	certificateRequest.Status.Certificate = certificate
 	report(cmapi.CertificateRequestReasonIssued, "Signed", nil)
 	return ctrl.Result{}, nil
 }

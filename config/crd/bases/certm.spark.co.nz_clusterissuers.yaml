@@ -56,6 +56,10 @@ spec:
                 description: Reference to the secret that's holding the login credentials
                   for the REST API
                 type: string
+              intermediateConfigmap:
+                description: Reference to the configmap that's holding the intermediate
+                  certificate
+                type: string
               proxy:
                 description: proxy to reach external URL
                 type: string
@@ -66,6 +70,7 @@ spec:
                 type: string
             required:
             - authSecretName
+            - intermediateConfigmap
             - url
             type: object
           status:

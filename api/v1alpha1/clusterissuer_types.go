@@ -38,6 +38,9 @@ type ClusterIssuerSpec struct {
 	// Reference to the secret that's holding the login credentials for the REST API
 	AuthSecretName string `json:"authSecretName"`
 
+	// Reference to the configmap that's holding the intermediate certificate
+	IntermediateConfigmap string `json:"intermediateConfigmap"`
+
 	// proxy to reach external URL
 	// +optional
 	Proxy string `json:"proxy,omitempty"`

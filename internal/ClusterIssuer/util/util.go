@@ -326,6 +326,7 @@ func SearchCertificate(spec *v1alpha1.ClusterIssuerSpec, token string, cn string
 		return "", false, 0, err
 	}
 	defer resp.Body.Close()
+	fmt.Println("responsecode", resp.StatusCode)
 	if resp.StatusCode == 404 {
 		return "", false, resp.StatusCode, nil
 	}
@@ -343,6 +344,16 @@ func SearchCertificate(spec *v1alpha1.ClusterIssuerSpec, token string, cn string
 		return "", false, 0, err
 	}
 	var validCerts []string
+	if len(x.Response.Response.Objects) < 1 {
+		return "", false, 404, nil
+	}
+	for i := 0; i < (len(x.Response.Response.Objects)); i++ {
+		if x.Response.Response.Objects[i].ExpiryStatus == "New Certificate" {
+			fmt.Println(x.Response.Response.Objects[i].ExpiryStatus)
+			// return early with a valid certificate if found
+			return "", true, 997, nil
+		}
+	}
 	for i := 0; i < (len(x.Response.Response.Objects)); i++ {
 		if x.Response.Response.Objects[i].ExpiryStatus == "Valid" || strings.Contains(x.Response.Response.Objects[i].ExpiryStatus, "Expiry") {
 			validCerts = append(validCerts, x.Response.Response.Objects[i].ResourceID)
@@ -361,59 +372,45 @@ func SearchCertificate(spec *v1alpha1.ClusterIssuerSpec, token string, cn string
 
 	}
 	// if only expired or revoked certificates are found, return 404, so that new certificate will be created
-	return "", false, 404, nil
+	return "", false, 0, nil
 }
 
-func APICertificateHandler(spec *v1alpha1.ClusterIssuerSpec, token string, csr string, cn string) ([]byte, error) {
+func APICertificateHandler(spec *v1alpha1.ClusterIssuerSpec, token string, csr string, cn string, interCert string) ([]byte, error) {
 	resourceID, exists, ccode, err := SearchCertificate(spec, token, cn)
-	if exists && ccode == 200 && resourceID != "" {
-		//revoking the certificate based on resource ID
-		rcode, err := RevokeCertificate(spec, token, cn, resourceID)
-		if err != nil || rcode != 200 {
-			return nil, err
+	if err != nil {
+		if exists && ccode == 200 && resourceID != "" {
+			//revoking the certificate based on resource ID
+			rcode, err := RevokeCertificate(spec, token, cn, resourceID)
+			if err != nil || rcode != 200 {
+				return nil, err
+			}
+			fmt.Println("rcode", rcode)
+			certificate, crcode, err := CreateCertificate(spec, token, csr, cn, interCert)
+			fmt.Println(string(certificate))
+			if crcode != 200 || err != nil {
+				return nil, fmt.Errorf("failed to create a new certificate for common name %s", cn)
+			}
+			return certificate, nil
 		}
-		certificate, crcode, err := CreateCertificate(spec, token, csr, cn)
-		if crcode != 200 || err != nil {
-			return nil, fmt.Errorf("failed to create a new certificate for common name %s", cn)
+		if !exists && ccode == 404 {
+			//Certificate not found
+			certificate, crcode, err := CreateCertificate(spec, token, csr, cn, interCert)
+			if crcode != 200 || err != nil {
+				return nil, fmt.Errorf("failed to create a new certificate for common name %s", cn)
+			}
+			return certificate, nil
 		}
-		return certificate, nil
-	}
-	if !exists && ccode == 404 {
-		//Certificate not found
-		certificate, crcode, err := CreateCertificate(spec, token, csr, cn)
-		if crcode != 200 || err != nil {
-			return nil, fmt.Errorf("failed to create a new certificate for common name %s", cn)
+		if exists && ccode == 997 {
+			return nil, fmt.Errorf("multiple new certificates found for this cn %s", cn)
 		}
-		return certificate, nil
-	}
-	if exists && ccode == 998 {
-		return nil, fmt.Errorf("multiple certificates found for this cn %s", cn)
-	}
-	if exists && ccode == 999 && resourceID != "" {
-		fmt.Println("reissuing999")
-		//revoking the certificate based on resource ID
-		rcode, err := RevokeCertificate(spec, token, cn, resourceID)
-		if err != nil || rcode != 200 {
-			return nil, err
+		if exists && ccode == 998 {
+			return nil, fmt.Errorf("multiple certificates found for this cn %s", cn)
 		}
-		certificate, crcode, err := CreateCertificate(spec, token, csr, cn)
-		if crcode != 200 || err != nil {
-			return nil, fmt.Errorf("failed to create a new certificate for common name %s", cn)
-		}
-		return certificate, nil
-	}
-	if exists && ccode == 997 {
-		fmt.Println("reissuing997")
-		certificate, crcode, err := CreateCertificate(spec, token, csr, cn)
-		if crcode != 200 || err != nil {
-			return nil, fmt.Errorf("failed to create a new certificate for common name %s", cn)
-		}
-		return certificate, nil
 	}
 	return nil, err
 }
 
-func CreateCertificate(spec *v1alpha1.ClusterIssuerSpec, token string, csr string, cn string) (certificate []byte, code int, err error) {
+func CreateCertificate(spec *v1alpha1.ClusterIssuerSpec, token string, csr string, cn string, interCert string) (certificate []byte, code int, err error) {
 	aurl := spec.URL
 	nurl := aurl + "/certificate/create?gwsource=external&isSync=true&ttl=300"
 	var tr *http.Transport
@@ -435,29 +432,56 @@ func CreateCertificate(spec *v1alpha1.ClusterIssuerSpec, token string, csr strin
 		Timeout:   30 * time.Second,
 		Transport: tr,
 	}
-	ndata := strings.NewReader(fmt.Sprintf(`{
-		"csrGenerationSource": "uploadCSR",
-		"caConnectorInfo": {
-			"certificateAuthority": "AppViewX",
-			"isAutoRenewal": false,
-			"autoRegenerateEnabled": false,
-			"caSettingName": "NON PROD Appviewx CA",
-			"validityUnitValue": "1",
-			"validityInDays": 1,
-			"validityUnit": "days"
-		},
-		"certificateGroup": {
-			"name": "Kubernetes-5G-Automation"
-		},
-		"uploadCsrDetails": {
-			"csrContent": "%v",
-			"category": "Server"
-		},
-		"certificateFormat": {
-			"format": "PEM",
-			"password": ""
-		}
-	}`, csr))
+	var ndata *strings.Reader
+	if strings.Contains(aurl, "non-prod") {
+		ndata = strings.NewReader(fmt.Sprintf(`{
+			"csrGenerationSource": "uploadCSR",
+			"caConnectorInfo": {
+				"certificateAuthority": "AppViewX",
+				"isAutoRenewal": false,
+				"autoRegenerateEnabled": false,
+				"caSettingName": "NON PROD Appviewx CA",
+				"validityUnitValue": "1",
+				"validityInDays": 1,
+				"validityUnit": "days"
+			},
+			"certificateGroup": {
+				"name": "Kubernetes-5G-Automation"
+			},
+			"uploadCsrDetails": {
+				"csrContent": "%v",
+				"category": "Server"
+			},
+			"certificateFormat": {
+				"format": "PEM",
+				"password": ""
+			}
+		}`, csr))
+	} else {
+		ndata = strings.NewReader(fmt.Sprintf(`{
+			"csrGenerationSource": "uploadCSR",
+			"caConnectorInfo": {
+				"certificateAuthority": "Microsoft Enterprise",
+				"isAutoRenewal": false,
+				"autoRegenerateEnabled": false,
+				"caSettingName": "SparkProdCA03",
+				"vendorSpecificDetails": {
+					"templateName": "SparkTLSServerAuth"
+				}
+			},
+			"uploadCsrDetails": {
+				"csrContent": "%v",
+				"category": "Server"
+			},
+			"certificateGroup": {
+				"name": "CG_Internal_Openshift"
+			},
+			"certificateFormat": {
+				"format": "PEM",
+				"password": ""
+			}
+		}`, csr))
+	}
 	// data := strings.NewReader(fmt.Sprintf(`{"csrGenerationSource": "appviewx","caConnectorInfo": {"certificateAuthority": "AppViewX","isAutoRenewal": false,"autoRegenerateEnabled": false,"caSettingName": "NON PROD Appviewx CA","csrParameters": {"commonName": "%s","certificateCategories": ["Server","Client"]},"validityUnitValue": "1","validityInDays": 365,"validityUnit": "years"},"certificateGroup": {"name": "Kubernetes-5G-Automation"},"certificateFormat": {"format": "PEM","password": ""}}`, cn))
 	req, err := http.NewRequest("POST", nurl, ndata)
 	if err != nil {
@@ -470,6 +494,7 @@ func CreateCertificate(spec *v1alpha1.ClusterIssuerSpec, token string, csr strin
 		return nil, 0, err
 	}
 	defer resp.Body.Close()
+	fmt.Println("responsecodefromcreate", resp.StatusCode)
 	if resp.StatusCode != 200 || resp == nil {
 		return nil, 0, err
 	}
@@ -482,7 +507,13 @@ func CreateCertificate(spec *v1alpha1.ClusterIssuerSpec, token string, csr strin
 	if err != nil {
 		return nil, 0, err
 	}
-	return []byte(fmt.Sprintf("%v", x.Response.CertificateContent)), 200, nil
+	origCert, err := base64.StdEncoding.DecodeString(x.Response.CertificateContent)
+	if err != nil {
+		return nil, 0, err
+	}
+	strCert := string(origCert) + interCert
+	fmt.Println("strcert", strCert)
+	return []byte(strCert), 200, nil
 }
 
 func RevokeCertificate(spec *v1alpha1.ClusterIssuerSpec, token string, cn string, resourceid string) (code int, err error) {

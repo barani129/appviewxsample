@@ -1,15 +1,11 @@
 package signer
 
 import (
+	"fmt"
 	"strings"
-	"time"
 
 	"github.com/barani129/appviewx/api/v1alpha1"
 	certmutil "github.com/barani129/appviewx/internal/ClusterIssuer/util"
-)
-
-var (
-	duration = time.Hour * 24 * 365
 )
 
 func ParseCommonName(csrbytes []byte) (string, error) {
@@ -21,16 +17,18 @@ func ParseCommonName(csrbytes []byte) (string, error) {
 	return cn, nil
 }
 
-func SearchCertificate(spec *v1alpha1.ClusterIssuerSpec, csr string, commonName string, username string, password string) ([]byte, error) {
+func SearchCertificate(spec *v1alpha1.ClusterIssuerSpec, csr string, commonName string, username string, password string, interCert string) ([]byte, error) {
+	fmt.Println("intercert", interCert)
 	token, err := certmutil.GetToken(spec, username, password)
 	if err != nil {
 		return nil, err
 	}
 	//Search remote API for the certificate
-	certificate, err := certmutil.APICertificateHandler(spec, token, csr, commonName)
+	certificate, err := certmutil.APICertificateHandler(spec, token, csr, commonName, interCert)
 	if err != nil || certificate == nil {
 		return nil, err
 	}
+	// newCert := base64.StdEncoding.EncodeToString([]byte(strCert))
 	return certificate, nil
 }
 

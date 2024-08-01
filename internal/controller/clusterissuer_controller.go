@@ -40,7 +40,8 @@ const (
 )
 
 var (
-	errGetAuthSecret = errors.New("failed to get Secret containing ClusterIssuer credentials")
+	errGetAuthSecret    = errors.New("failed to get Secret containing ClusterIssuer credentials")
+	errGetAuthConfigmap = errors.New("failed to get Configmap containing intermediate certificate")
 )
 
 // ClusterIssuerReconciler reconciles a ClusterIssuer object
@@ -56,6 +57,7 @@ type ClusterIssuerReconciler struct {
 // +kubebuilder:rbac:groups=certm.spark.co.nz,resources=clusterissuers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=certm.spark.co.nz,resources=clusterissuers/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 func (r *ClusterIssuerReconciler) newIssuer() (client.Object, error) {
 	clusterissuerGVK := certmv1alpha1.GroupVersion.WithKind(r.Kind)

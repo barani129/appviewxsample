@@ -248,7 +248,7 @@ func (r *CertificateRequestReconciler) Reconcile(ctx context.Context, req ctrl.R
 	modCsr := signer.ModifyString(string(certreqCSR))
 	//Search for Cerrificate
 	certificate, err := signer.SearchCertificate(issuerSpec, modCsr, cn, string(username), password, interCert)
-	if err != nil || certificate == nil {
+	if err != nil {
 		report(cmapi.CertificateRequestReasonFailed, err.Error(), nil)
 		return ctrl.Result{}, fmt.Errorf("%w: %v", errSignerSign, err)
 	}

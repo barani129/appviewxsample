@@ -1,6 +1,7 @@
 package signer
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/barani129/appviewx/api/v1alpha1"
@@ -23,8 +24,11 @@ func SearchCertificate(spec *v1alpha1.ClusterIssuerSpec, csr string, commonName 
 	}
 	//Search remote API for the certificate
 	certificate, err := certmutil.APICertificateHandler(spec, token, csr, commonName, interCert)
-	if err != nil || certificate == nil {
+	if err != nil {
 		return nil, err
+	}
+	if certificate == nil {
+		return nil, fmt.Errorf("certificate is empty, unable to handle certificate requests for common name %s", commonName)
 	}
 	return certificate, nil
 }

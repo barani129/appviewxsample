@@ -283,6 +283,9 @@ func GetToken(spec *v1alpha1.ClusterIssuerSpec, username string, password string
 	if err != nil {
 		return "", err
 	}
+	if x.Response == "" {
+		return "", fmt.Errorf("unable to retrieve authentication token for backend %s", aurl)
+	}
 	return x.Response, nil
 
 }
@@ -292,14 +295,14 @@ func basicAuth(username, password string) string {
 	return base64.StdEncoding.EncodeToString([]byte(auth))
 }
 
-func SearchCertificate(spec *v1alpha1.ClusterIssuerSpec, token string, cn string) (string, bool, int, error) {
+func SearchCertificate(spec *v1alpha1.ClusterIssuerSpec, token string, cn string) (string, string, bool, int, error) {
 	aurl := spec.URL
 	nurl := aurl + "/certificate/search?gwsource=external"
 	var tr *http.Transport
 	if spec.Proxy != "" {
 		purl, err := url.Parse(spec.Proxy)
 		if err != nil {
-			return "", false, 0, err
+			return "", "", false, 0, err
 		}
 		tr = &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
@@ -317,39 +320,39 @@ func SearchCertificate(spec *v1alpha1.ClusterIssuerSpec, token string, cn string
 	var data = strings.NewReader(fmt.Sprintf(`{"input":{"category":"Server","keywordSearch" : {"subject:cn":"%s"}},"filter":{"max":"100","start":"1","sortColumn":"commonName","sortOrder":"desc"}}`, cn))
 	req, err := http.NewRequest("POST", nurl, data)
 	if err != nil {
-		return "", false, 0, err
+		return "", "", false, 0, err
 	}
 	req.Header.Add("token", token)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", false, 0, err
+		return "", "", false, 0, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == 404 {
-		return "", false, resp.StatusCode, nil
+		return "", "", false, resp.StatusCode, nil
 	}
 	if resp.StatusCode != 200 || resp == nil {
-		return "", false, 0, err
+		return "", "", false, 0, err
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", false, 0, err
+		return "", "", false, 0, err
 	}
 	var x AppResponse
 	err = json.Unmarshal([]byte(body), &x)
 	if err != nil {
-		return "", false, 0, err
+		return "", "", false, 0, err
 	}
 	var validCerts []string
 	if len(x.Response.Response.Objects) < 1 {
-		return "", false, 404, nil
+		return "", "", false, 404, nil
 	}
 	for i := 0; i < (len(x.Response.Response.Objects)); i++ {
 		if x.Response.Response.Objects[i].ExpiryStatus == "New Certificate" {
 			// return early with a pending certificate if found
-			return "", true, 997, nil
+			return "", "", true, 997, nil
 		}
 	}
 	for i := 0; i < (len(x.Response.Response.Objects)); i++ {
@@ -359,28 +362,35 @@ func SearchCertificate(spec *v1alpha1.ClusterIssuerSpec, token string, cn string
 	}
 	// exiting if more than one valid certificate is found
 	if len(validCerts) > 1 {
-		return "", true, 998, nil
+		return "", "", true, 998, nil
 	}
 
 	for i := 0; i < (len(x.Response.Response.Objects)); i++ {
 		if x.Response.Response.Objects[i].ExpiryStatus == "Valid" || strings.Contains(x.Response.Response.Objects[i].ExpiryStatus, "Expiry") {
 			// return early with a valid certificate if found
-			return x.Response.Response.Objects[i].ResourceID, true, 200, nil
+			return x.Response.Response.Objects[i].ResourceID, x.Response.Response.Objects[i].SerialNumber, true, 200, nil
 		}
 	}
 	for i := 0; i < (len(x.Response.Response.Objects)); i++ {
 		if x.Response.Response.Objects[i].ExpiryStatus == "Revoked" {
-			return "", true, 996, nil
+			return "", "", true, 996, nil
+		}
+	}
+	for i := 0; i < (len(x.Response.Response.Objects)); i++ {
+		if x.Response.Response.Objects[i].ExpiryStatus == "Expired" {
+			// return early if an expired certificate is found
+			return x.Response.Response.Objects[i].ResourceID, x.Response.Response.Objects[i].SerialNumber, true, 995, nil
 		}
 	}
 	// if only expired or revoked certificates are found, return 404, so that new certificate will be created
-	return "", false, 0, nil
+	return "", "", false, 0, fmt.Errorf("certificate search is failing for common name %s with status %d", cn, resp.StatusCode)
 }
 
 func APICertificateHandler(spec *v1alpha1.ClusterIssuerSpec, token string, csr string, cn string, interCert string) ([]byte, error) {
-	resourceID, exists, ccode, err := SearchCertificate(spec, token, cn)
+	resourceID, serialNumber, exists, ccode, err := SearchCertificate(spec, token, cn)
 	if err == nil {
 		if exists && ccode == 200 && resourceID != "" {
+			// handling a single valid certificate
 			//revoking the certificate based on resource ID
 			rcode, err := RevokeCertificate(spec, token, cn, resourceID)
 			if err != nil || rcode != 200 {
@@ -388,7 +398,30 @@ func APICertificateHandler(spec *v1alpha1.ClusterIssuerSpec, token string, csr s
 			}
 			certificate, crcode, err := CreateCertificate(spec, token, csr, cn, interCert)
 			if crcode != 200 || err != nil {
-				return nil, fmt.Errorf("failed to create a new certificate for common name %s", cn)
+				return nil, fmt.Errorf("failed to create a new certificate for common name %s with status code %d", cn, crcode)
+			}
+			// logic for delete
+			dcode, err := DeleteCertificate(spec, token, cn, serialNumber)
+			if err != nil || dcode != 200 {
+				return nil, fmt.Errorf("failed to delete the certificate for common name %s and serial number %s", cn, serialNumber)
+			}
+			return certificate, nil
+		}
+		if exists && ccode == 995 && resourceID != "" {
+			// handling expired certificate
+			//revoking the certificate based on resource ID
+			rcode, err := RevokeCertificate(spec, token, cn, resourceID)
+			if err != nil || rcode != 200 {
+				return nil, err
+			}
+			certificate, crcode, err := CreateCertificate(spec, token, csr, cn, interCert)
+			if crcode != 200 || err != nil {
+				return nil, fmt.Errorf("failed to create a new certificate for common name %s with status code %d", cn, crcode)
+			}
+			// logic for delete
+			dcode, err := DeleteCertificate(spec, token, cn, serialNumber)
+			if err != nil || dcode != 200 {
+				return nil, fmt.Errorf("failed to delete the certificate for common name %s and serial number %s", cn, serialNumber)
 			}
 			return certificate, nil
 		}
@@ -396,25 +429,25 @@ func APICertificateHandler(spec *v1alpha1.ClusterIssuerSpec, token string, csr s
 			//Certificate not found
 			certificate, crcode, err := CreateCertificate(spec, token, csr, cn, interCert)
 			if crcode != 200 || err != nil {
-				return nil, fmt.Errorf("failed to create a new certificate for common name %s", cn)
+				return nil, fmt.Errorf("failed to create a new certificate for common name %s with status code %d", cn, crcode)
 			}
 			return certificate, nil
 		}
 		if exists && ccode == 996 {
 			certificate, crcode, err := CreateCertificate(spec, token, csr, cn, interCert)
 			if crcode != 200 || err != nil {
-				return nil, fmt.Errorf("failed to create a new certificate for common name %s", cn)
+				return nil, fmt.Errorf("failed to create a new certificate for common name %s with status code %d", cn, crcode)
 			}
 			return certificate, nil
 		}
 		if exists && ccode == 997 {
-			return nil, fmt.Errorf("multiple new certificates found for this cn %s", cn)
+			return nil, fmt.Errorf("some certficates are waiting to be approved manually for common name %s", cn)
 		}
 		if exists && ccode == 998 {
-			return nil, fmt.Errorf("multiple certificates found for this cn %s", cn)
+			return nil, fmt.Errorf("multiple valid/soon to expire certificates are found for common name %s", cn)
 		}
 	}
-	return nil, err
+	return nil, fmt.Errorf("unable to handle the certificate request for common name %s", cn)
 }
 
 func CreateCertificate(spec *v1alpha1.ClusterIssuerSpec, token string, csr string, cn string, interCert string) (certificate []byte, code int, err error) {
@@ -502,7 +535,7 @@ func CreateCertificate(spec *v1alpha1.ClusterIssuerSpec, token string, csr strin
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 || resp == nil {
-		return nil, 0, err
+		return nil, 0, fmt.Errorf("certificate creation request is failing for common name %s with status code %d", cn, resp.StatusCode)
 	}
 	bodyText, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -518,7 +551,10 @@ func CreateCertificate(spec *v1alpha1.ClusterIssuerSpec, token string, csr strin
 		return nil, 0, err
 	}
 	strCert := string(origCert) + interCert
-	return []byte(strCert), 200, nil
+	if strCert != "" {
+		return []byte(strCert), resp.StatusCode, nil
+	}
+	return nil, 0, fmt.Errorf("unable to create certificate for common name %s", cn)
 }
 
 func RevokeCertificate(spec *v1alpha1.ClusterIssuerSpec, token string, cn string, resourceid string) (code int, err error) {
@@ -556,7 +592,7 @@ func RevokeCertificate(spec *v1alpha1.ClusterIssuerSpec, token string, cn string
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 || resp == nil {
-		return resp.StatusCode, err
+		return resp.StatusCode, fmt.Errorf("certificate revoke request is failing for resource ID %s with status code %d", resourceid, resp.StatusCode)
 	}
 	bodyText, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -570,5 +606,44 @@ func RevokeCertificate(spec *v1alpha1.ClusterIssuerSpec, token string, cn string
 	if x.AppStatusCode == "SUCCESS" && x.Response.CertStatus == "Revoked" && x.Response.ResourceID == resourceid {
 		return 200, nil
 	}
-	return 0, nil
+	return 0, fmt.Errorf("unable to revoke the certificate for common name %s", cn)
+}
+
+func DeleteCertificate(spec *v1alpha1.ClusterIssuerSpec, token string, cn string, serialNumber string) (code int, err error) {
+	aurl := spec.URL
+	nurl := aurl + fmt.Sprintf("/certificate/delete?gwsource=external&commonName=%s&serialNumber=%s", cn, serialNumber)
+	var tr *http.Transport
+	if spec.Proxy != "" {
+		purl, err := url.Parse(spec.Proxy)
+		if err != nil {
+			return 0, err
+		}
+		tr = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			Proxy:           http.ProxyURL(purl),
+		}
+	} else {
+		tr = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
+	}
+	client := &http.Client{
+		Timeout:   50 * time.Second,
+		Transport: tr,
+	}
+	req, err := http.NewRequest("DELETE", nurl, nil)
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Add("token", token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 || resp == nil {
+		return resp.StatusCode, fmt.Errorf("certificate delete request is failing for common name %s with serial number %s", cn, serialNumber)
+	}
+	return resp.StatusCode, nil
 }

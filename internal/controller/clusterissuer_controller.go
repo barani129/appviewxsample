@@ -90,7 +90,7 @@ func (r *ClusterIssuerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		if err := client.IgnoreNotFound(err); err != nil {
 			return ctrl.Result{}, fmt.Errorf("unexpected get error: %v", err)
 		}
-		log.Log.Info("Clusterissuerr is not found. Ignoring.")
+		log.Log.Info("Clusterissuer is not found. Ignoring.")
 		return ctrl.Result{}, nil
 	}
 

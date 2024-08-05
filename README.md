@@ -4,6 +4,50 @@ Sample cluster issuer for retrieving certificates from appviewx backend
 ## Description
 Sample cluster issuer for retrieving certificates from appviewx backend
 
+## How to install
+**Install CRD**
+oc/kubectl create -f config/crd/bases/certm.spark.co.nz_clusterissuers.yaml
+**Install role and rolebinding for service account to use with deployment**
+oc/kubectl create sa appviewx -n <targetNamespace>
+Modify the service account name and namespace in role/rolebinding.yaml files.
+oc/kubectl create -f config/rbac/role.yaml
+oc/kubectl create -f config/rbac/role_binding.yaml
+**Create the deployment of the clusterissuer**
+Update the service account and security contexts.
+```sh
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+ name: appviewx-controller
+ labels:
+  control-plane: appviewx-certm
+ // add more labels if you would like
+spec:
+ replicas: 1
+ selector:
+  matchLabels:
+   control-plane: appviewx-certm
+ template:
+  metadata:
+   labels:
+    control-plane: appviewx-certm
+  spec:
+   serviceAccount: appviewx
+   securityContext:
+    runAsNonRootUser: true
+   containers:
+    name: appviewx
+    image: <location of build image>
+    securityContext:
+     allowPrivilegeEscalation: false
+     runAsNonRootUser: true
+     capabilities:
+       drop:
+       - "ALL"
+```
+**Monitor the logs**
+oc/kubectl logs -f appviewx-*
+
 ## Getting Started
 
 ### Prerequisites

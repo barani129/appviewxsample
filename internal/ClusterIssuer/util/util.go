@@ -272,7 +272,7 @@ func GetToken(spec *v1alpha1.ClusterIssuerSpec, username string, password string
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 || resp == nil {
-		return "", err
+		return "", fmt.Errorf("unable to retrieve token from the backend %s", aurl)
 	}
 	bodyText, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -284,10 +284,9 @@ func GetToken(spec *v1alpha1.ClusterIssuerSpec, username string, password string
 		return "", err
 	}
 	if x.Response == "" {
-		return "", fmt.Errorf("unable to retrieve authentication token for backend %s", aurl)
+		return "", fmt.Errorf("token is empty, unable to retrieve authentication token from backend %s", aurl)
 	}
 	return x.Response, nil
-
 }
 
 func basicAuth(username, password string) string {

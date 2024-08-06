@@ -381,7 +381,7 @@ func SearchCertificate(spec *v1alpha1.ClusterIssuerSpec, token string, cn string
 		}
 	}
 	// if only expired or revoked certificates are found, return 404, so that new certificate will be created
-	return "", "", false, 0, fmt.Errorf("certificate search is failing for common name %s with status %d", cn, resp.StatusCode)
+	return "", "", false, 0, fmt.Errorf("certificate search is failing for common name %s with status %d due to unknown errors", cn, resp.StatusCode)
 }
 
 func APICertificateHandler(spec *v1alpha1.ClusterIssuerSpec, token string, csr string, cn string, interCert string) ([]byte, error) {
@@ -391,16 +391,25 @@ func APICertificateHandler(spec *v1alpha1.ClusterIssuerSpec, token string, csr s
 			// handling a single valid certificate
 			//revoking the certificate based on resource ID
 			rcode, err := RevokeCertificate(spec, token, cn, resourceID)
-			if err != nil || rcode != 200 {
+			if err != nil {
 				return nil, err
 			}
+			if rcode != 200 {
+				return nil, fmt.Errorf("failed to revoke the certificate for resource ID %s common name %s with status code %d", resourceID, cn, rcode)
+			}
 			certificate, crcode, err := CreateCertificate(spec, token, csr, cn, interCert)
-			if crcode != 200 || err != nil {
+			if err != nil {
+				return nil, err
+			}
+			if crcode != 200 {
 				return nil, fmt.Errorf("failed to create a new certificate for common name %s with status code %d", cn, crcode)
 			}
 			// logic for delete
 			dcode, err := DeleteCertificate(spec, token, cn, serialNumber)
-			if err != nil || dcode != 200 {
+			if err != nil {
+				return nil, err
+			}
+			if dcode != 200 {
 				return nil, fmt.Errorf("failed to delete the certificate for common name %s and serial number %s", cn, serialNumber)
 			}
 			return certificate, nil
@@ -409,16 +418,25 @@ func APICertificateHandler(spec *v1alpha1.ClusterIssuerSpec, token string, csr s
 			// handling expired certificate
 			//revoking the certificate based on resource ID
 			rcode, err := RevokeCertificate(spec, token, cn, resourceID)
-			if err != nil || rcode != 200 {
+			if err != nil {
 				return nil, err
 			}
+			if rcode != 200 {
+				return nil, fmt.Errorf("failed to revoke the certificate for resource ID %s common name %s with status code %d", resourceID, cn, rcode)
+			}
 			certificate, crcode, err := CreateCertificate(spec, token, csr, cn, interCert)
-			if crcode != 200 || err != nil {
+			if err != nil {
+				return nil, err
+			}
+			if crcode != 200 {
 				return nil, fmt.Errorf("failed to create a new certificate for common name %s with status code %d", cn, crcode)
 			}
 			// logic for delete
 			dcode, err := DeleteCertificate(spec, token, cn, serialNumber)
-			if err != nil || dcode != 200 {
+			if err != nil {
+				return nil, err
+			}
+			if dcode != 200 {
 				return nil, fmt.Errorf("failed to delete the certificate for common name %s and serial number %s", cn, serialNumber)
 			}
 			return certificate, nil
@@ -426,23 +444,29 @@ func APICertificateHandler(spec *v1alpha1.ClusterIssuerSpec, token string, csr s
 		if !exists && ccode == 404 {
 			//Certificate not found
 			certificate, crcode, err := CreateCertificate(spec, token, csr, cn, interCert)
-			if crcode != 200 || err != nil {
+			if err != nil {
+				return nil, err
+			}
+			if crcode != 200 {
 				return nil, fmt.Errorf("failed to create a new certificate for common name %s with status code %d", cn, crcode)
 			}
 			return certificate, nil
 		}
 		if exists && ccode == 996 {
 			certificate, crcode, err := CreateCertificate(spec, token, csr, cn, interCert)
-			if crcode != 200 || err != nil {
+			if err != nil {
+				return nil, err
+			}
+			if crcode != 200 {
 				return nil, fmt.Errorf("failed to create a new certificate for common name %s with status code %d", cn, crcode)
 			}
 			return certificate, nil
 		}
 		if exists && ccode == 997 {
-			return nil, fmt.Errorf("some certficates are waiting to be approved manually for common name %s", cn)
+			return nil, fmt.Errorf("failed: found one or more certficates with status New Certificate for common name %s, please delete it or approve it via appview UI", cn)
 		}
 		if exists && ccode == 998 {
-			return nil, fmt.Errorf("multiple valid/soon to expire certificates are found for common name %s", cn)
+			return nil, fmt.Errorf("multiple valid/soon to expire certificates are found for common name %s, check/delete certificates via appviewx UI", cn)
 		}
 	}
 	return nil, fmt.Errorf("unable to handle the certificate request for common name %s", cn)

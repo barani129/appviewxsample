@@ -25,6 +25,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -36,7 +37,7 @@ import (
 )
 
 const (
-	defaultHealthCheckInterval = time.Minute
+	defaultHealthCheckInterval = 1800 * time.Minute
 )
 
 var (
@@ -78,25 +79,26 @@ func (r *ClusterIssuerReconciler) newIssuer() (client.Object, error) {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.17.2/pkg/reconcile
 func (r *ClusterIssuerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, err error) {
-	_ = log.FromContext(ctx)
+	log := log.FromContext(ctx)
 
 	// TODO(user): your logic here
 	issuer, err := r.newIssuer()
 	if err != nil {
-		log.Log.Error(err, "unrecognized issuer type")
+		log.Error(err, "unrecognized issuer type")
 		return ctrl.Result{}, nil
 	}
+
 	if err := r.Get(ctx, req.NamespacedName, issuer); err != nil {
 		if err := client.IgnoreNotFound(err); err != nil {
 			return ctrl.Result{}, fmt.Errorf("unexpected get error: %v", err)
 		}
-		log.Log.Info("Clusterissuer is not found. Ignoring.")
+		log.Info("Clusterissuer is not found. Ignoring.")
 		return ctrl.Result{}, nil
 	}
 
 	issuerSpec, issuerStatus, err := certmutil.GetSpecAndStatus(issuer)
 	if err != nil {
-		log.Log.Error(err, "Unexpected error while getting issuer spec and status. Not retrying.")
+		log.Error(err, "Unexpected error while getting issuer spec and status. Not retrying.")
 		return ctrl.Result{}, nil
 	}
 
@@ -104,11 +106,11 @@ func (r *ClusterIssuerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	report := func(conditionStatus certmv1alpha1.ConditionStatus, message string, err error) {
 		eventType := corev1.EventTypeNormal
 		if err != nil {
-			log.Log.Error(err, message)
+			log.Error(err, message)
 			eventType = corev1.EventTypeWarning
 			message = fmt.Sprintf("%s: %v", message, err)
 		} else {
-			log.Log.Info(message)
+			log.Info(message)
 		}
 		r.recorder.Event(issuer, eventType, certmv1alpha1.EventReasonIssuerReconciler, message)
 		certmutil.SetReadyCondition(issuerStatus, conditionStatus, certmv1alpha1.EventReasonIssuerReconciler, message)
@@ -122,6 +124,25 @@ func (r *ClusterIssuerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			result = ctrl.Result{}
 		}
 	}()
+	var secretNamespace string
+	switch t := issuer.(type) {
+	case *certmv1alpha1.ClusterIssuer:
+		secretNamespace = r.ClusterResourceNamespace
+	default:
+		report(certmv1alpha1.ConditionTrue, "unknown type", fmt.Errorf("unexpected issuer type: %v", t))
+		return ctrl.Result{}, nil
+	}
+	secretName := types.NamespacedName{
+		Name:      issuerSpec.AuthSecretName,
+		Namespace: secretNamespace,
+	}
+
+	var secret corev1.Secret
+	if err := r.Get(ctx, secretName, &secret); err != nil {
+		return ctrl.Result{}, fmt.Errorf("%w, secret name: %s, reason: %v", errGetAuthSecret, secretName, err)
+	}
+	username := secret.Data["username"]
+	password := string(secret.Data["password"])
 
 	if ready := certmutil.GetReadyCondition(issuerStatus); ready == nil {
 		report(certmv1alpha1.ConditionUnknown, "First Seen", nil)
@@ -129,27 +150,37 @@ func (r *ClusterIssuerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	if issuerStatus.LastPollTime == nil {
-		log.Log.Info("Checking if remote API is reachable")
+		log.Info("Checking if remote API is reachable")
 		err := certmutil.GetAPIAliveness(issuerSpec)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("remote API is unreachable %s", err)
 		}
+		log.Info("Checking if remote API can provide a valid token")
+		_, err = certmutil.GetToken(issuerSpec, string(username), password)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("unable to retrieve token %s", err)
+		}
 		now := metav1.Now()
 		issuerStatus.LastPollTime = &now
 	} else {
-		pastTime := time.Now().Add(-2 * time.Minute)
+		pastTime := time.Now().Add(-1 * defaultHealthCheckInterval)
 		timeDiff := issuerStatus.LastPollTime.Time.Before(pastTime)
 		if timeDiff {
-			log.Log.Info("Checking if remote API is rechable as the time elasped")
+			log.Info("Checking if remote API is rechable as the time elasped")
 			err := certmutil.GetAPIAliveness(issuerSpec)
 			if err != nil {
 				return ctrl.Result{}, fmt.Errorf("remote API is unreachable %s", err)
+			}
+			log.Info("Checking if remote API can provide a valid token as the time elasped")
+			_, err = certmutil.GetToken(issuerSpec, string(username), password)
+			if err != nil {
+				return ctrl.Result{}, fmt.Errorf("unable to retrieve token %s", err)
 			}
 			now := metav1.Now()
 			issuerStatus.LastPollTime = &now
 		}
 	}
-	report(certmv1alpha1.ConditionTrue, fmt.Sprintf("Success. Remote API %s is reachable from the cluster.", issuerSpec.URL), nil)
+	report(certmv1alpha1.ConditionTrue, fmt.Sprintf("Success. Remote API %s is reachable and retrieved valid token.", issuerSpec.URL), nil)
 	return ctrl.Result{RequeueAfter: defaultHealthCheckInterval}, nil
 }
 

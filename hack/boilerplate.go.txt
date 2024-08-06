@@ -1,5 +1,5 @@
 /*
-Copyright 2024 baranitharan.chittharajan@spark.co.nz.
+Copyright 2024 baranitharan.chittharanjan@spark.co.nz.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.

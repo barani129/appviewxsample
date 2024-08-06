@@ -271,12 +271,12 @@ func GetToken(spec *v1alpha1.ClusterIssuerSpec, username string, password string
 		return "", err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 || resp == nil {
-		return "", fmt.Errorf("unable to retrieve token from the backend %s", aurl)
-	}
 	bodyText, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", err
+	}
+	if resp.StatusCode != 200 || resp == nil {
+		return "", fmt.Errorf("unable to retrieve token from the backend %s, message body %s", aurl, string(bodyText))
 	}
 	var x ServerResponse
 	err = json.Unmarshal([]byte(bodyText), &x)
@@ -328,16 +328,15 @@ func SearchCertificate(spec *v1alpha1.ClusterIssuerSpec, token string, cn string
 		return "", "", false, 0, err
 	}
 	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", "", false, 0, err
+	}
 	if resp.StatusCode == 404 {
 		return "", "", false, resp.StatusCode, nil
 	}
 	if resp.StatusCode != 200 || resp == nil {
-		return "", "", false, 0, err
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", "", false, 0, err
+		return "", "", false, 0, fmt.Errorf("unable to search certificate for common name %s, message body %s", cn, string(body))
 	}
 	var x AppResponse
 	err = json.Unmarshal([]byte(body), &x)
@@ -533,12 +532,12 @@ func CreateCertificate(spec *v1alpha1.ClusterIssuerSpec, token string, csr strin
 		return nil, 0, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 || resp == nil {
-		return nil, 0, fmt.Errorf("certificate creation request is failing for common name %s with status code %d", cn, resp.StatusCode)
-	}
 	bodyText, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, 0, err
+	}
+	if resp.StatusCode != 200 || resp == nil {
+		return nil, 0, fmt.Errorf("certificate creation request is failing for common name %s with status code %d, message body %s", cn, resp.StatusCode, string(bodyText))
 	}
 	var x CreationResponse
 	err = json.Unmarshal([]byte(bodyText), &x)
@@ -590,12 +589,12 @@ func RevokeCertificate(spec *v1alpha1.ClusterIssuerSpec, token string, cn string
 		return 0, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 || resp == nil {
-		return resp.StatusCode, fmt.Errorf("certificate revoke request is failing for resource ID %s with status code %d", resourceid, resp.StatusCode)
-	}
 	bodyText, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return 0, err
+	}
+	if resp.StatusCode != 200 || resp == nil {
+		return resp.StatusCode, fmt.Errorf("certificate revoke request is failing for resource ID %s with status code %d, message body %s", resourceid, resp.StatusCode, string(bodyText))
 	}
 	var x RevokeResponse
 	err = json.Unmarshal([]byte(bodyText), &x)
@@ -641,8 +640,12 @@ func DeleteCertificate(spec *v1alpha1.ClusterIssuerSpec, token string, cn string
 		return 0, err
 	}
 	defer resp.Body.Close()
+	bodyText, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, err
+	}
 	if resp.StatusCode != 200 || resp == nil {
-		return resp.StatusCode, fmt.Errorf("certificate delete request is failing for common name %s with serial number %s", cn, serialNumber)
+		return resp.StatusCode, fmt.Errorf("certificate delete request is failing for common name %s with serial number %s, message body %s", cn, serialNumber, string(bodyText))
 	}
 	return resp.StatusCode, nil
 }
